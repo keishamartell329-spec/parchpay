@@ -1,7 +1,7 @@
 # api/records.py
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from .data import (
     find_user_by_api_key,
     find_user_by_id,
@@ -18,13 +18,12 @@ from .data import (
 
 router = APIRouter(prefix="/api/extension/records", tags=["records"])
 
-# Helper to extract user from Authorization header
-def get_user_from_request(request: Request):
+async def get_user_from_request(request: Request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     api_key = auth[7:]
-    user = find_user_by_api_key(api_key)
+    user = await find_user_by_api_key(api_key)   # FIX: await
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return user
@@ -42,7 +41,7 @@ class NextRecordResponse(BaseModel):
 
 @router.get("/next", response_model=NextRecordResponse)
 async def get_next_record(request: Request, requested_amount: Optional[float] = None):
-    user = get_user_from_request(request)
+    user = await get_user_from_request(request)
     record = await get_next_record_for_user(user["id"], requested_amount)
     if not record and requested_amount is not None:
         record = await get_next_record_for_user(user["id"], None)
@@ -74,22 +73,15 @@ class StatusUpdateResponse(BaseModel):
 
 @router.put("/{record_id}/status", response_model=StatusUpdateResponse)
 async def update_status(request: Request, record_id: int, data: StatusUpdateRequest):
-    user = get_user_from_request(request)
+    user = await get_user_from_request(request)
     if data.status not in ("success", "failed"):
         raise HTTPException(status_code=400, detail='Status must be "success" or "failed"')
-
-    updated = await update_record_status(
-        record_id,
-        user["id"],
-        data.dict(exclude_unset=True)
-    )
+    updated = await update_record_status(record_id, user["id"], data.dict(exclude_unset=True))
     if not updated:
         raise HTTPException(status_code=404, detail="Record not found or not owned by user")
-
     if data.status == "success" and data.amount_paid and data.amount_paid > 0:
         await update_user_balance(user["id"], -data.amount_paid)
         user = await find_user_by_id(user["id"])
-
     return StatusUpdateResponse(
         balance=f"{user['balance']:.2f}",
         record_status=updated["status"],
@@ -108,7 +100,6 @@ class CreateRecordRequest(BaseModel):
 
 @router.post("/admin/records")
 async def admin_create_record(data: CreateRecordRequest):
-    # if user_id not provided, use user 1 (or create a default)
     user_id = data.user_id
     if user_id is None:
         user = await find_user_by_id(1)
@@ -119,16 +110,14 @@ async def admin_create_record(data: CreateRecordRequest):
             user_id = user["id"]
         else:
             user_id = 1
-
-    # Check for duplicate using data layer (get all records and filter)
-    all_records = await get_all_records()
-    for rec in all_records:
+    # duplicate check using data layer
+    all_recs = await get_all_records()
+    for rec in all_recs:
         if (rec["identifier"] == data.identifier and
             rec["field_a"] == data.field_a and
             rec["field_b"] == data.field_b and
             rec["field_c"] == data.field_c):
             raise HTTPException(status_code=409, detail="Record already exists")
-
     rec = await create_record(user_id, data.identifier, data.field_a, data.field_b, data.field_c, data.school, data.requested_amount)
     return rec
 
@@ -152,53 +141,36 @@ async def admin_list_users():
 async def admin_list_records():
     return await get_all_records()
 
-# CSV Import
 class CSVImportRequest(BaseModel):
-    csv_data: str  # multiline string with records
+    csv_data: str
 
 @router.post("/admin/import-csv")
 async def admin_import_csv(data: CSVImportRequest):
     lines = data.csv_data.strip().split('\n')
     created = []
     errors = []
-    # Get existing records to check duplicates
-    existing_records = await get_all_records()
-
+    existing = await get_all_records()
     for idx, line in enumerate(lines, start=1):
         line = line.strip()
         if not line:
             continue
         parts = line.split('|')
         if len(parts) < 4:
-            errors.append(f"Line {idx}: insufficient fields (need card|month|year|cvv)")
+            errors.append(f"Line {idx}: insufficient fields")
             continue
-        identifier = parts[0].strip()
-        field_a = parts[1].strip()
-        field_b = parts[2].strip()
-        field_c = parts[3].strip()
+        identifier, field_a, field_b, field_c = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
         school = parts[4].strip() if len(parts) > 4 else ""
         requested_amount = float(parts[5].strip()) if len(parts) > 5 and parts[5].strip() else 0.0
-
-        # Check duplicate using existing records
-        duplicate = any(
-            r["identifier"] == identifier and
-            r["field_a"] == field_a and
-            r["field_b"] == field_b and
-            r["field_c"] == field_c
-            for r in existing_records
-        )
-        if duplicate:
-            errors.append(f"Line {idx}: duplicate record (card {identifier})")
+        # duplicate check
+        dup = any(r["identifier"] == identifier and r["field_a"] == field_a and r["field_b"] == field_b and r["field_c"] == field_c for r in existing)
+        if dup:
+            errors.append(f"Line {idx}: duplicate")
             continue
-
-        user_id = 1  # default user
-        rec = await create_record(user_id, identifier, field_a, field_b, field_c, school, requested_amount)
+        rec = await create_record(1, identifier, field_a, field_b, field_c, school, requested_amount)
         created.append(rec)
-        existing_records.append(rec)  # add to local list to catch duplicates within the same import
-
+        existing.append(rec)
     return {"created": created, "errors": errors}
 
-# ---------- DELETE endpoints (now use data layer) ----------
 @router.delete("/admin/records/{record_id}")
 async def admin_delete_record(record_id: int):
     deleted = await delete_record(record_id)
