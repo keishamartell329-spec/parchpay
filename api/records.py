@@ -9,7 +9,9 @@ from .data import (
     update_user_balance,
     create_record,
     find_user_by_id,
-    find_user_by_username
+    find_user_by_username,
+    get_all_users,
+    get_all_records
 )
 
 router = APIRouter(prefix="/api/extension/records", tags=["records"])
@@ -115,3 +117,15 @@ async def admin_topup(username: str, amount: float):
         raise HTTPException(status_code=404, detail="User not found")
     updated = update_user_balance(user["id"], amount)
     return {"username": username, "new_balance": f"{updated['balance']:.2f}"}
+
+# ---------- Admin GET endpoints (for the admin panel) ----------
+
+@router.get("/admin/users")
+async def admin_list_users():
+    """List all users (no auth for demo – add protection in production)"""
+    return get_all_users()
+
+@router.get("/admin/records")
+async def admin_list_records():
+    """List all records (no auth for demo)"""
+    return get_all_records()
