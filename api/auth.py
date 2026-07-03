@@ -29,12 +29,14 @@ async def register(req: RegisterRequest):
         raise HTTPException(status_code=400, detail="Username and password required")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    if find_user_by_username(req.username):
+    # FIX: add await
+    existing = await find_user_by_username(req.username)
+    if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
 
     hashed = bcrypt.hash(req.password)
     api_key = secrets.token_hex(32)
-    user = create_user(req.username, hashed, api_key, 0.0)
+    user = await create_user(req.username, hashed, api_key, 0.0)
 
     return AuthResponse(
         username=user["username"],
@@ -47,7 +49,7 @@ async def register(req: RegisterRequest):
 
 @router.post("/login", response_model=AuthResponse)
 async def login(req: LoginRequest):
-    user = find_user_by_username(req.username)
+    user = await find_user_by_username(req.username)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not bcrypt.verify(req.password, user["passwordHash"]):
