@@ -12,6 +12,7 @@ from .data import (
     create_record,
     get_all_records,
     get_all_users,
+    get_pool,
 )
 
 router = APIRouter(prefix="/api/extension/records", tags=["records"])
@@ -174,7 +175,6 @@ class CSVImportRequest(BaseModel):
 
 @router.post("/admin/import-csv")
 async def admin_import_csv(data: CSVImportRequest):
-    from .data import get_pool
     lines = data.csv_data.strip().split('\n')
     created = []
     errors = []
@@ -217,7 +217,6 @@ async def admin_import_csv(data: CSVImportRequest):
 # ---------- DELETE endpoints ----------
 @router.delete("/admin/records/{record_id}")
 async def admin_delete_record(record_id: int):
-    from .data import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Check if record exists
@@ -231,7 +230,6 @@ async def admin_delete_record(record_id: int):
 
 @router.delete("/admin/records")
 async def admin_clear_records():
-    from .data import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Count before deletion
