@@ -12,7 +12,8 @@ from .data import (
     create_record,
     get_all_records,
     get_all_users,
-    get_pool,
+    delete_record,
+    clear_all_records,
 )
 
 router = APIRouter(prefix="/api/extension/records", tags=["records"])
@@ -28,7 +29,6 @@ def get_user_from_request(request: Request):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return user
 
-
 class NextRecordResponse(BaseModel):
     id: int
     identifier: str
@@ -40,14 +40,11 @@ class NextRecordResponse(BaseModel):
     balance: str
     payment_result_wait_seconds: int = 5
 
-
 @router.get("/next", response_model=NextRecordResponse)
 async def get_next_record(request: Request, requested_amount: Optional[float] = None):
     user = get_user_from_request(request)
-    # First attempt with the given amount
     record = await get_next_record_for_user(user["id"], requested_amount)
     if not record and requested_amount is not None:
-        # Fallback: try without amount filter
         record = await get_next_record_for_user(user["id"], None)
     if not record:
         raise HTTPException(status_code=404, detail="No available records")
@@ -62,7 +59,6 @@ async def get_next_record(request: Request, requested_amount: Optional[float] = 
         balance=f"{user['balance']:.2f}"
     )
 
-
 class StatusUpdateRequest(BaseModel):
     status: str
     transaction_id: Optional[str] = None
@@ -71,12 +67,10 @@ class StatusUpdateRequest(BaseModel):
     amount_paid: Optional[float] = None
     school: Optional[str] = None
 
-
 class StatusUpdateResponse(BaseModel):
     balance: str
     record_status: str
     message: Optional[str] = None
-
 
 @router.put("/{record_id}/status", response_model=StatusUpdateResponse)
 async def update_status(request: Request, record_id: int, data: StatusUpdateRequest):
@@ -94,7 +88,6 @@ async def update_status(request: Request, record_id: int, data: StatusUpdateRequ
 
     if data.status == "success" and data.amount_paid and data.amount_paid > 0:
         await update_user_balance(user["id"], -data.amount_paid)
-        # refresh user balance from store
         user = await find_user_by_id(user["id"])
 
     return StatusUpdateResponse(
@@ -102,7 +95,6 @@ async def update_status(request: Request, record_id: int, data: StatusUpdateRequ
         record_status=updated["status"],
         message=updated.get("message")
     )
-
 
 # ---------- Admin endpoints ----------
 class CreateRecordRequest(BaseModel):
@@ -114,7 +106,6 @@ class CreateRecordRequest(BaseModel):
     school: str = ""
     requested_amount: float = 0.0
 
-
 @router.post("/admin/records")
 async def admin_create_record(data: CreateRecordRequest):
     # if user_id not provided, use user 1 (or create a default)
@@ -122,32 +113,28 @@ async def admin_create_record(data: CreateRecordRequest):
     if user_id is None:
         user = await find_user_by_id(1)
         if not user:
-            # create a default user
             from passlib.hash import bcrypt
             hashed = bcrypt.hash("password123")
             user = await create_user("default", hashed, "default-api-key", 0.0)
             user_id = user["id"]
         else:
             user_id = 1
-    
-    # Check for duplicate using database query
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT id FROM records WHERE identifier = $1 AND field_a = $2 AND field_b = $3 AND field_c = $4",
-            data.identifier, data.field_a, data.field_b, data.field_c
-        )
-        if existing:
+
+    # Check for duplicate using data layer (get all records and filter)
+    all_records = await get_all_records()
+    for rec in all_records:
+        if (rec["identifier"] == data.identifier and
+            rec["field_a"] == data.field_a and
+            rec["field_b"] == data.field_b and
+            rec["field_c"] == data.field_c):
             raise HTTPException(status_code=409, detail="Record already exists")
-    
+
     rec = await create_record(user_id, data.identifier, data.field_a, data.field_b, data.field_c, data.school, data.requested_amount)
     return rec
-
 
 class TopUpRequest(BaseModel):
     username: str
     amount: float
-
 
 @router.post("/admin/topup")
 async def admin_topup(data: TopUpRequest):
@@ -157,34 +144,30 @@ async def admin_topup(data: TopUpRequest):
     updated = await update_user_balance(user["id"], data.amount)
     return {"username": data.username, "new_balance": f"{updated['balance']:.2f}"}
 
-
 @router.get("/admin/users")
 async def admin_list_users():
     return await get_all_users()
-
 
 @router.get("/admin/records")
 async def admin_list_records():
     return await get_all_records()
 
-
 # CSV Import
 class CSVImportRequest(BaseModel):
     csv_data: str  # multiline string with records
-
 
 @router.post("/admin/import-csv")
 async def admin_import_csv(data: CSVImportRequest):
     lines = data.csv_data.strip().split('\n')
     created = []
     errors = []
-    pool = await get_pool()
-    
+    # Get existing records to check duplicates
+    existing_records = await get_all_records()
+
     for idx, line in enumerate(lines, start=1):
         line = line.strip()
         if not line:
             continue
-        # Format: card_number|month|year|cvv|school|amount (school and amount optional)
         parts = line.split('|')
         if len(parts) < 4:
             errors.append(f"Line {idx}: insufficient fields (need card|month|year|cvv)")
@@ -195,44 +178,35 @@ async def admin_import_csv(data: CSVImportRequest):
         field_c = parts[3].strip()
         school = parts[4].strip() if len(parts) > 4 else ""
         requested_amount = float(parts[5].strip()) if len(parts) > 5 and parts[5].strip() else 0.0
-        
-        # Check duplicate using database
-        async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id FROM records WHERE identifier = $1 AND field_a = $2 AND field_b = $3 AND field_c = $4",
-                identifier, field_a, field_b, field_c
-            )
-            if existing:
-                errors.append(f"Line {idx}: duplicate record (card {identifier})")
-                continue
-        
-        # Use default user 1
-        user_id = 1
+
+        # Check duplicate using existing records
+        duplicate = any(
+            r["identifier"] == identifier and
+            r["field_a"] == field_a and
+            r["field_b"] == field_b and
+            r["field_c"] == field_c
+            for r in existing_records
+        )
+        if duplicate:
+            errors.append(f"Line {idx}: duplicate record (card {identifier})")
+            continue
+
+        user_id = 1  # default user
         rec = await create_record(user_id, identifier, field_a, field_b, field_c, school, requested_amount)
         created.append(rec)
-    
+        existing_records.append(rec)  # add to local list to catch duplicates within the same import
+
     return {"created": created, "errors": errors}
 
-
-# ---------- DELETE endpoints ----------
+# ---------- DELETE endpoints (now use data layer) ----------
 @router.delete("/admin/records/{record_id}")
 async def admin_delete_record(record_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Check if record exists
-        record = await conn.fetchrow("SELECT id FROM records WHERE id = $1", record_id)
-        if not record:
-            raise HTTPException(status_code=404, detail="Record not found")
-        # Delete it
-        await conn.execute("DELETE FROM records WHERE id = $1", record_id)
-        return {"deleted": True, "id": record_id}
-
+    deleted = await delete_record(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"deleted": True, "id": record_id}
 
 @router.delete("/admin/records")
 async def admin_clear_records():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Count before deletion
-        count = await conn.fetchval("SELECT COUNT(*) FROM records")
-        await conn.execute("DELETE FROM records")
-        return {"deleted_count": count}
+    count = await clear_all_records()
+    return {"deleted_count": count}
