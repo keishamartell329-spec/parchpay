@@ -1,48 +1,121 @@
 # api/data.py
+import asyncpg
+import os
 from typing import Optional, List, Dict, Any
 import time
+from passlib.hash import bcrypt
 
-# In-memory stores
-users: List[Dict[str, Any]] = []
-records: List[Dict[str, Any]] = []
+# Database connection pool (created once)
+_pool = None
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            os.environ.get("DATABASE_URL"),
+            min_size=1,
+            max_size=10
+        )
+    return _pool
 
 # ---------- User helpers ----------
-def find_user_by_api_key(api_key: str) -> Optional[Dict]:
-    return next((u for u in users if u["apiKey"] == api_key), None)
+async def find_user_by_api_key(api_key: str) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, username, passwordhash, apikey, balance, isactive FROM users WHERE apikey = $1",
+            api_key
+        )
+        if row:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "passwordHash": row["passwordhash"],
+                "apiKey": row["apikey"],
+                "balance": float(row["balance"]),
+                "isActive": row["isactive"]
+            }
+        return None
 
-def find_user_by_username(username: str) -> Optional[Dict]:
-    return next((u for u in users if u["username"] == username), None)
+async def find_user_by_username(username: str) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, username, passwordhash, apikey, balance, isactive FROM users WHERE username = $1",
+            username
+        )
+        if row:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "passwordHash": row["passwordhash"],
+                "apiKey": row["apikey"],
+                "balance": float(row["balance"]),
+                "isActive": row["isactive"]
+            }
+        return None
 
-def find_user_by_id(user_id: int) -> Optional[Dict]:
-    return next((u for u in users if u["id"] == user_id), None)
+async def find_user_by_id(user_id: int) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, username, passwordhash, apikey, balance, isactive FROM users WHERE id = $1",
+            user_id
+        )
+        if row:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "passwordHash": row["passwordhash"],
+                "apiKey": row["apikey"],
+                "balance": float(row["balance"]),
+                "isActive": row["isactive"]
+            }
+        return None
 
-def create_user(username: str, password_hash: str, api_key: str, balance: float = 0.0) -> Dict:
-    user = {
-        "id": len(users) + 1,
-        "username": username,
-        "passwordHash": password_hash,
-        "apiKey": api_key,
-        "balance": balance,
-        "isActive": True,
-    }
-    users.append(user)
-    return user
+async def create_user(username: str, password_hash: str, api_key: str, balance: float = 0.0) -> Dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO users (username, passwordhash, apikey, balance, isactive)
+               VALUES ($1, $2, $3, $4, true) RETURNING id, username, passwordhash, apikey, balance, isactive""",
+            username, password_hash, api_key, balance
+        )
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "passwordHash": row["passwordhash"],
+            "apiKey": row["apikey"],
+            "balance": float(row["balance"]),
+            "isActive": row["isactive"]
+        }
 
 # ---------- Record helpers ----------
-def get_next_record_for_user(user_id: int, requested_amount: Optional[float] = None) -> Optional[Dict]:
-    candidates = [
-        r for r in records
-        if r["userId"] == user_id
-        and r["status"] not in ("success", "failed")
-    ]
-    if requested_amount is not None:
-        candidates = [r for r in candidates if r["requested_amount"] == requested_amount]
-    if not candidates:
-        # fallback: any pending record
-        candidates = [r for r in records if r["userId"] == user_id and r["status"] not in ("success", "failed")]
-    return candidates[0] if candidates else None
+async def get_next_record_for_user(user_id: int, requested_amount: Optional[float] = None) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # First try with amount filter if provided
+        if requested_amount is not None:
+            row = await conn.fetchrow(
+                """SELECT id, userid, identifier, field_a, field_b, field_c, school, requested_amount, status, transaction_id, message, amount_paid, created_at
+                   FROM records WHERE userid = $1 AND status NOT IN ('success', 'failed') AND requested_amount = $2
+                   ORDER BY id LIMIT 1""",
+                user_id, requested_amount
+            )
+            if row:
+                return dict(row)
+        # Fallback: any pending record
+        row = await conn.fetchrow(
+            """SELECT id, userid, identifier, field_a, field_b, field_c, school, requested_amount, status, transaction_id, message, amount_paid, created_at
+               FROM records WHERE userid = $1 AND status NOT IN ('success', 'failed')
+               ORDER BY id LIMIT 1""",
+            user_id
+        )
+        if row:
+            return dict(row)
+        return None
 
-def create_record(
+async def create_record(
     user_id: int,
     identifier: str,
     field_a: str,
@@ -51,61 +124,116 @@ def create_record(
     school: str = "",
     requested_amount: float = 0.0
 ) -> Dict:
-    record = {
-        "id": len(records) + 1,
-        "userId": user_id,
-        "identifier": identifier,
-        "field_a": field_a,
-        "field_b": field_b,
-        "field_c": field_c,
-        "school": school,
-        "requested_amount": float(requested_amount),
-        "status": "pending",
-        "transaction_id": None,
-        "message": None,
-        "amount_paid": None,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-    }
-    records.append(record)
-    return record
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO records (userid, identifier, field_a, field_b, field_c, school, requested_amount, status, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
+               RETURNING id, userid, identifier, field_a, field_b, field_c, school, requested_amount, status, transaction_id, message, amount_paid, created_at""",
+            user_id, identifier, field_a, field_b, field_c, school, requested_amount
+        )
+        return dict(row)
 
-def update_record_status(record_id: int, user_id: int, data: Dict) -> Optional[Dict]:
-    record = next((r for r in records if r["id"] == record_id and r["userId"] == user_id), None)
-    if not record:
+async def update_record_status(record_id: int, user_id: int, data: Dict) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Build dynamic SET clause
+        sets = []
+        params = []
+        idx = 1
+        for key in ("status", "transaction_id", "message", "requested_amount", "amount_paid", "school"):
+            if key in data:
+                sets.append(f"{key} = ${idx}")
+                params.append(data[key])
+                idx += 1
+        if not sets:
+            return None
+        params.append(record_id)
+        params.append(user_id)
+        query = f"""UPDATE records SET {', '.join(sets)} 
+                    WHERE id = ${idx} AND userid = ${idx+1}
+                    RETURNING id, userid, identifier, field_a, field_b, field_c, school, requested_amount, status, transaction_id, message, amount_paid, created_at"""
+        row = await conn.fetchrow(query, *params)
+        if row:
+            return dict(row)
         return None
-    record["status"] = data.get("status")
-    record["transaction_id"] = data.get("transaction_id")
-    record["message"] = data.get("message")
-    if data.get("requested_amount") is not None:
-        record["requested_amount"] = float(data["requested_amount"])
-    if data.get("amount_paid") is not None:
-        record["amount_paid"] = float(data["amount_paid"])
-    if data.get("school"):
-        record["school"] = data["school"]
-    return record
 
-def update_user_balance(user_id: int, amount: float) -> Optional[Dict]:
-    user = find_user_by_id(user_id)
-    if not user:
+async def update_user_balance(user_id: int, amount: float) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING id, username, balance",
+            amount, user_id
+        )
+        if row:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "balance": float(row["balance"])
+            }
         return None
-    user["balance"] = max(0.0, user["balance"] + amount)
-    return user
 
 # ---------- Admin helpers ----------
-def get_all_users():
-    return users
+async def get_all_users():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, username, balance, apikey, isactive FROM users ORDER BY id")
+        return [dict(row) for row in rows]
 
-def get_all_records():
-    return records
+async def get_all_records():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM records ORDER BY id")
+        return [dict(row) for row in rows]
 
-# ---------- Seed demo data (optional) ----------
-def seed_demo_data():
-    if not users:
-        from passlib.hash import bcrypt
+# ---------- Database initialization ----------
+async def init_db():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Create users table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                passwordhash TEXT NOT NULL,
+                apikey TEXT UNIQUE NOT NULL,
+                balance DECIMAL(10,2) DEFAULT 0.0,
+                isactive BOOLEAN DEFAULT TRUE
+            )
+        """)
+        # Create records table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS records (
+                id SERIAL PRIMARY KEY,
+                userid INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                identifier TEXT NOT NULL,
+                field_a TEXT NOT NULL,
+                field_b TEXT NOT NULL,
+                field_c TEXT NOT NULL,
+                school TEXT,
+                requested_amount DECIMAL(10,2),
+                status TEXT DEFAULT 'pending',
+                transaction_id TEXT,
+                message TEXT,
+                amount_paid DECIMAL(10,2),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+
+# ---------- Seed demo data (only if no users exist) ----------
+async def seed_demo_data():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Check if users exist
+        count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        if count > 0:
+            return
+        # Create demo user
         hashed = bcrypt.hash("password123")
-        user = create_user("demo", hashed, "demo-api-key-123", 100.0)
+        user = await create_user("demo", hashed, "demo-api-key-123", 100.0)
+        # Insert 10 demo records
         for i in range(1, 11):
-            create_record(
+            await create_record(
                 user_id=user["id"],
                 identifier=f"411111111111111{i:02d}",
                 field_a=f"{i % 12 + 1:02d}",
