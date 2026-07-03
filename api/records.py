@@ -1,17 +1,18 @@
 # api/records.py
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from .data import (
     find_user_by_api_key,
+    find_user_by_id,
+    find_user_by_username,
     get_next_record_for_user,
     update_record_status,
     update_user_balance,
     create_record,
-    find_user_by_id,
-    find_user_by_username,
+    get_all_records,
     get_all_users,
-    get_all_records
+    records
 )
 
 router = APIRouter(prefix="/api/extension/records", tags=["records"])
@@ -93,39 +94,88 @@ async def update_status(request: Request, record_id: int, data: StatusUpdateRequ
         message=updated.get("message")
     )
 
-# ---------- Admin endpoints (for testing) ----------
+# ---------- Admin endpoints (fixed) ----------
+class CreateRecordRequest(BaseModel):
+    user_id: Optional[int] = None
+    identifier: str
+    field_a: str
+    field_b: str
+    field_c: str
+    school: str = ""
+    requested_amount: float = 0.0
 
 @router.post("/admin/records")
-async def admin_create_record(
-    user_id: int,
-    identifier: str,
-    field_a: str,
-    field_b: str,
-    field_c: str,
-    school: str = "",
-    requested_amount: float = 0.0
-):
-    if not find_user_by_id(user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-    rec = create_record(user_id, identifier, field_a, field_b, field_c, school, requested_amount)
+async def admin_create_record(data: CreateRecordRequest):
+    # if user_id not provided, use user 1 (or create a default)
+    user_id = data.user_id
+    if user_id is None:
+        user = find_user_by_id(1)
+        if not user:
+            # create a default user
+            from passlib.hash import bcrypt
+            hashed = bcrypt.hash("password123")
+            user = create_user("default", hashed, "default-api-key", 0.0)
+            user_id = user["id"]
+        else:
+            user_id = 1
+    # Check for duplicate (same identifier, expiry, cvv)
+    existing = next((r for r in records if r["identifier"] == data.identifier and r["field_a"] == data.field_a and r["field_b"] == data.field_b and r["field_c"] == data.field_c), None)
+    if existing:
+        raise HTTPException(status_code=409, detail="Record already exists")
+    rec = create_record(user_id, data.identifier, data.field_a, data.field_b, data.field_c, data.school, data.requested_amount)
     return rec
 
+class TopUpRequest(BaseModel):
+    username: str
+    amount: float
+
 @router.post("/admin/topup")
-async def admin_topup(username: str, amount: float):
-    user = find_user_by_username(username)
+async def admin_topup(data: TopUpRequest):
+    user = find_user_by_username(data.username)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    updated = update_user_balance(user["id"], amount)
-    return {"username": username, "new_balance": f"{updated['balance']:.2f}"}
-
-# ---------- Admin GET endpoints (for the admin panel) ----------
+    updated = update_user_balance(user["id"], data.amount)
+    return {"username": data.username, "new_balance": f"{updated['balance']:.2f}"}
 
 @router.get("/admin/users")
 async def admin_list_users():
-    """List all users (no auth for demo – add protection in production)"""
     return get_all_users()
 
 @router.get("/admin/records")
 async def admin_list_records():
-    """List all records (no auth for demo)"""
     return get_all_records()
+
+# CSV Import
+class CSVImportRequest(BaseModel):
+    csv_data: str  # multiline string with records
+
+@router.post("/admin/import-csv")
+async def admin_import_csv(data: CSVImportRequest):
+    lines = data.csv_data.strip().split('\n')
+    created = []
+    errors = []
+    for idx, line in enumerate(lines, start=1):
+        line = line.strip()
+        if not line:
+            continue
+        # Format: card_number|month|year|cvv|school|amount (school and amount optional)
+        parts = line.split('|')
+        if len(parts) < 4:
+            errors.append(f"Line {idx}: insufficient fields (need card|month|year|cvv)")
+            continue
+        identifier = parts[0].strip()
+        field_a = parts[1].strip()
+        field_b = parts[2].strip()
+        field_c = parts[3].strip()
+        school = parts[4].strip() if len(parts) > 4 else ""
+        requested_amount = float(parts[5].strip()) if len(parts) > 5 and parts[5].strip() else 0.0
+        # Check duplicate
+        existing = next((r for r in records if r["identifier"] == identifier and r["field_a"] == field_a and r["field_b"] == field_b and r["field_c"] == field_c), None)
+        if existing:
+            errors.append(f"Line {idx}: duplicate record (card {identifier})")
+            continue
+        # Use default user 1 (or you can add a user_id column)
+        user_id = 1
+        rec = create_record(user_id, identifier, field_a, field_b, field_c, school, requested_amount)
+        created.append(rec)
+    return {"created": created, "errors": errors}
