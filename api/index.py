@@ -45,6 +45,10 @@ async def admin_panel():
         input, select, textarea { width: 100%; padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px; box-sizing: border-box; }
         button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: 600; }
         button:hover { background: #2980b9; }
+        .delete-btn { background: #dc3545; }
+        .delete-btn:hover { background: #c82333; }
+        .clear-btn { background: #dc3545; margin-bottom: 10px; }
+        .clear-btn:hover { background: #c82333; }
         .status { margin-top: 10px; padding: 10px; border-radius: 4px; }
         .success { background: #d4edda; color: #155724; }
         .error { background: #f8d7da; color: #721c24; }
@@ -55,6 +59,8 @@ async def admin_panel():
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
         .mono { font-family: monospace; font-size: 13px; }
+        .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -78,6 +84,7 @@ async def admin_panel():
     <!-- Records Tab -->
     <div id="records" class="tab-content">
         <h2>Records</h2>
+        <button id="clear-all-btn" class="clear-btn">🗑️ Clear All Records</button>
         <div id="records-list">Loading…</div>
     </div>
 
@@ -162,6 +169,7 @@ async def admin_panel():
             return res.json();
         }
 
+        // ---- Tab switching ----
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -173,6 +181,7 @@ async def admin_panel():
             });
         });
 
+        // ---- Users ----
         async function loadUsers() {
             const container = document.getElementById('users-list');
             try {
@@ -200,6 +209,7 @@ async def admin_panel():
             }
         }
 
+        // ---- Records ----
         async function loadRecords() {
             const container = document.getElementById('records-list');
             try {
@@ -211,6 +221,7 @@ async def admin_panel():
                 let html = `<table><thead><tr>
                     <th>ID</th><th>User ID</th><th>Card</th><th>Month</th><th>Year</th><th>CVV</th>
                     <th>School</th><th>Amount</th><th>Status</th><th>Tx ID</th><th>Message</th>
+                    <th>Actions</th>
                 </tr></thead><tbody>`;
                 records.forEach(r => {
                     const statusClass = r.status === 'success' ? 'badge-success' : r.status === 'failed' ? 'badge-failed' : 'badge-pending';
@@ -226,6 +237,9 @@ async def admin_panel():
                         <td><span class="badge ${statusClass}">${r.status}</span></td>
                         <td class="mono">${r.transaction_id || ''}</td>
                         <td>${r.message || ''}</td>
+                        <td>
+                            <button class="delete-btn btn-sm" onclick="deleteRecord(${r.id})">Delete</button>
+                        </td>
                     </tr>`;
                 });
                 html += '</tbody></table>';
@@ -235,7 +249,42 @@ async def admin_panel():
             }
         }
 
-        // Add Record
+        // ---- Delete single record ----
+        async function deleteRecord(recordId) {
+            if (!confirm(`Delete record ${recordId}? This action cannot be undone.`)) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/extension/records/admin/records/${recordId}`, {
+                    method: 'DELETE',
+                });
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || res.statusText);
+                }
+                // Reload the records list
+                loadRecords();
+            } catch (err) {
+                alert('Delete failed: ' + err.message);
+            }
+        }
+
+        // ---- Clear all records ----
+        async function clearAllRecords() {
+            if (!confirm('Delete ALL records? This cannot be undone!')) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/extension/records/admin/records`, {
+                    method: 'DELETE',
+                });
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || res.statusText);
+                }
+                loadRecords();
+            } catch (err) {
+                alert('Clear all failed: ' + err.message);
+            }
+        }
+
+        // ---- Add Record ----
         document.getElementById('add-record-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const status = document.getElementById('add-status');
@@ -267,7 +316,7 @@ async def admin_panel():
             }
         });
 
-        // CSV Import
+        // ---- CSV Import ----
         document.getElementById('csv-import-btn').addEventListener('click', async () => {
             const csvData = document.getElementById('csv-data').value;
             const status = document.getElementById('csv-status');
@@ -292,7 +341,7 @@ async def admin_panel():
             }
         });
 
-        // Top Up
+        // ---- Top Up ----
         document.getElementById('topup-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const status = document.getElementById('topup-status');
@@ -319,7 +368,10 @@ async def admin_panel():
             }
         });
 
-        // Initial load
+        // ---- Attach clear all button ----
+        document.getElementById('clear-all-btn').addEventListener('click', clearAllRecords);
+
+        // ---- Initial load ----
         loadUsers();
         document.querySelector('[data-tab="records"]').addEventListener('click', loadRecords);
     </script>
