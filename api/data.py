@@ -91,6 +91,13 @@ def update_user_balance(user_id: int, amount: float) -> Optional[Dict]:
     user["balance"] = max(0.0, user["balance"] + amount)
     return user
 
+# ---------- Admin helpers ----------
+def get_all_users():
+    return users
+
+def get_all_records():
+    return records
+
 # ---------- Seed demo data (optional) ----------
 def seed_demo_data():
     if not users:
