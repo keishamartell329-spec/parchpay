@@ -94,7 +94,7 @@ async def update_status(request: Request, record_id: int, data: StatusUpdateRequ
         message=updated.get("message")
     )
 
-# ---------- Admin endpoints (fixed) ----------
+# ---------- Admin endpoints ----------
 class CreateRecordRequest(BaseModel):
     user_id: Optional[int] = None
     identifier: str
@@ -106,19 +106,18 @@ class CreateRecordRequest(BaseModel):
 
 @router.post("/admin/records")
 async def admin_create_record(data: CreateRecordRequest):
-    # if user_id not provided, use user 1 (or create a default)
     user_id = data.user_id
     if user_id is None:
         user = find_user_by_id(1)
         if not user:
-            # create a default user
             from passlib.hash import bcrypt
+            from .data import create_user
             hashed = bcrypt.hash("password123")
             user = create_user("default", hashed, "default-api-key", 0.0)
             user_id = user["id"]
         else:
             user_id = 1
-    # Check for duplicate (same identifier, expiry, cvv)
+    # Check for duplicate
     existing = next((r for r in records if r["identifier"] == data.identifier and r["field_a"] == data.field_a and r["field_b"] == data.field_b and r["field_c"] == data.field_c), None)
     if existing:
         raise HTTPException(status_code=409, detail="Record already exists")
@@ -145,9 +144,27 @@ async def admin_list_users():
 async def admin_list_records():
     return get_all_records()
 
+# ---------- Admin DELETE endpoints ----------
+
+@router.delete("/admin/records/{record_id}")
+async def admin_delete_record(record_id: int):
+    """Delete a specific record by ID"""
+    for idx, r in enumerate(records):
+        if r["id"] == record_id:
+            deleted = records.pop(idx)
+            return {"deleted": deleted}
+    raise HTTPException(status_code=404, detail="Record not found")
+
+@router.delete("/admin/records")
+async def admin_clear_records():
+    """Delete all records"""
+    count = len(records)
+    records.clear()
+    return {"deleted_count": count}
+
 # CSV Import
 class CSVImportRequest(BaseModel):
-    csv_data: str  # multiline string with records
+    csv_data: str
 
 @router.post("/admin/import-csv")
 async def admin_import_csv(data: CSVImportRequest):
@@ -158,7 +175,6 @@ async def admin_import_csv(data: CSVImportRequest):
         line = line.strip()
         if not line:
             continue
-        # Format: card_number|month|year|cvv|school|amount (school and amount optional)
         parts = line.split('|')
         if len(parts) < 4:
             errors.append(f"Line {idx}: insufficient fields (need card|month|year|cvv)")
@@ -169,12 +185,10 @@ async def admin_import_csv(data: CSVImportRequest):
         field_c = parts[3].strip()
         school = parts[4].strip() if len(parts) > 4 else ""
         requested_amount = float(parts[5].strip()) if len(parts) > 5 and parts[5].strip() else 0.0
-        # Check duplicate
         existing = next((r for r in records if r["identifier"] == identifier and r["field_a"] == field_a and r["field_b"] == field_b and r["field_c"] == field_c), None)
         if existing:
             errors.append(f"Line {idx}: duplicate record (card {identifier})")
             continue
-        # Use default user 1 (or you can add a user_id column)
         user_id = 1
         rec = create_record(user_id, identifier, field_a, field_b, field_c, school, requested_amount)
         created.append(rec)
