@@ -1,0 +1,15 @@
+{
+  "name": "queuepay-backend",
+  "version": "1.0.0",
+  "description": "Backend for QueuePay Chrome extension",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {},
+  "license": "MIT"
+}
