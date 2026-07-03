@@ -29,8 +29,7 @@ async def register(req: RegisterRequest):
         raise HTTPException(status_code=400, detail="Username and password required")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    # FIX: add await
-    existing = await find_user_by_username(req.username)
+    existing = await find_user_by_username(req.username)   # FIX: added await
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
 
