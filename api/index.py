@@ -1,5 +1,5 @@
 # api/index.py
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .auth import router as auth_router
@@ -8,7 +8,6 @@ from .data import seed_demo_data
 
 app = FastAPI(redirect_slashes=False)
 
-# CORS (adjust for production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,7 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routes
 app.include_router(auth_router)
 app.include_router(records_router)
 
@@ -44,7 +42,7 @@ async def admin_panel():
         th { background: #f1f3f5; font-weight: 600; }
         .form-group { margin-bottom: 15px; }
         label { display: block; font-weight: 500; margin-bottom: 4px; }
-        input, select { width: 100%; padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px; box-sizing: border-box; }
+        input, select, textarea { width: 100%; padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px; box-sizing: border-box; }
         button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: 600; }
         button:hover { background: #2980b9; }
         .status { margin-top: 10px; padding: 10px; border-radius: 4px; }
@@ -67,6 +65,7 @@ async def admin_panel():
         <button class="tab-btn active" data-tab="users">👥 Users</button>
         <button class="tab-btn" data-tab="records">💳 Records</button>
         <button class="tab-btn" data-tab="add-record">➕ Add Record</button>
+        <button class="tab-btn" data-tab="csv-import">📂 CSV Import</button>
         <button class="tab-btn" data-tab="topup">💰 Top Up</button>
     </div>
 
@@ -88,8 +87,8 @@ async def admin_panel():
         <form id="add-record-form">
             <div class="grid-2">
                 <div class="form-group">
-                    <label for="userId">User ID *</label>
-                    <input type="number" id="userId" required>
+                    <label for="userId">User ID (optional, defaults to 1)</label>
+                    <input type="number" id="userId" placeholder="Leave empty for default user">
                 </div>
                 <div class="form-group">
                     <label for="identifier">Card Number *</label>
@@ -121,6 +120,17 @@ async def admin_panel():
         <div id="add-status" class="status"></div>
     </div>
 
+    <!-- CSV Import Tab -->
+    <div id="csv-import" class="tab-content">
+        <h2>Import from CSV</h2>
+        <p>Format: <code>card_number|month|year|cvv|school|amount</code> (school and amount optional). One record per line.</p>
+        <textarea id="csv-data" rows="10" style="width:100%; font-family:monospace; padding:8px;" placeholder="41111111111111101|02|26|101|Demo School|1.00
+41111111111111102|02|26|102"></textarea>
+        <br><br>
+        <button id="csv-import-btn">Import</button>
+        <div id="csv-status" class="status"></div>
+    </div>
+
     <!-- Top Up Tab -->
     <div id="topup" class="tab-content">
         <h2>Top up a user's balance</h2>
@@ -141,10 +151,8 @@ async def admin_panel():
     </div>
 
     <script>
-        // Base URL
         const API_BASE = window.location.origin;
 
-        // Utility to fetch and handle JSON
         async function fetchJSON(url, options = {}) {
             const res = await fetch(url, options);
             if (!res.ok) {
@@ -154,7 +162,6 @@ async def admin_panel():
             return res.json();
         }
 
-        // ----- Tab switching -----
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -166,7 +173,6 @@ async def admin_panel():
             });
         });
 
-        // ----- Load users -----
         async function loadUsers() {
             const container = document.getElementById('users-list');
             try {
@@ -194,7 +200,6 @@ async def admin_panel():
             }
         }
 
-        // ----- Load records -----
         async function loadRecords() {
             const container = document.getElementById('records-list');
             try {
@@ -230,7 +235,7 @@ async def admin_panel():
             }
         }
 
-        // ----- Add record -----
+        // Add Record
         document.getElementById('add-record-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const status = document.getElementById('add-status');
@@ -238,7 +243,7 @@ async def admin_panel():
             status.className = 'status';
 
             const payload = {
-                user_id: parseInt(document.getElementById('userId').value),
+                user_id: document.getElementById('userId').value ? parseInt(document.getElementById('userId').value) : null,
                 identifier: document.getElementById('identifier').value,
                 field_a: document.getElementById('field_a').value,
                 field_b: document.getElementById('field_b').value,
@@ -262,25 +267,47 @@ async def admin_panel():
             }
         });
 
-        // ----- Top up -----
+        // CSV Import
+        document.getElementById('csv-import-btn').addEventListener('click', async () => {
+            const csvData = document.getElementById('csv-data').value;
+            const status = document.getElementById('csv-status');
+            status.textContent = 'Importing...';
+            status.className = 'status';
+            try {
+                const result = await fetchJSON(`${API_BASE}/api/extension/records/admin/import-csv`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ csv_data: csvData })
+                });
+                let msg = `✅ Imported ${result.created.length} records.`;
+                if (result.errors.length) {
+                    msg += ` Errors: ${result.errors.join('; ')}`;
+                }
+                status.textContent = msg;
+                status.className = 'status success';
+                if (document.getElementById('records').classList.contains('active')) loadRecords();
+            } catch (err) {
+                status.textContent = '❌ Error: ' + err.message;
+                status.className = 'status error';
+            }
+        });
+
+        // Top Up
         document.getElementById('topup-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const status = document.getElementById('topup-status');
             status.textContent = 'Submitting…';
             status.className = 'status';
 
-            const username = document.getElementById('topup-username').value;
-            const amount = parseFloat(document.getElementById('topup-amount').value);
-            if (!username || isNaN(amount) || amount <= 0) {
-                status.textContent = '❌ Please fill in a valid username and amount.';
-                status.className = 'status error';
-                return;
-            }
+            const payload = {
+                username: document.getElementById('topup-username').value,
+                amount: parseFloat(document.getElementById('topup-amount').value),
+            };
             try {
                 const result = await fetchJSON(`${API_BASE}/api/extension/records/admin/topup`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, amount }),
+                    body: JSON.stringify(payload),
                 });
                 status.textContent = `✅ Balance updated. New balance: $${result.new_balance}`;
                 status.className = 'status success';
@@ -294,15 +321,14 @@ async def admin_panel():
 
         // Initial load
         loadUsers();
+        document.querySelector('[data-tab="records"]').addEventListener('click', loadRecords);
     </script>
 </body>
 </html>
     """
 
-# Keep root route simple
 @app.get("/")
 async def root():
     return {"message": "ParchPay API is running. Admin panel at /admin"}
 
-# Seed demo data
 seed_demo_data()
