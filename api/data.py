@@ -1,22 +1,16 @@
 # api/data.py
-import os
 import time
 from typing import Optional, Dict, List, Any
 from passlib.hash import bcrypt
 
-# Global in-memory stores (fallback)
 _users = []
 _records = []
-_pool = None
 
 async def get_pool():
-    """
-    Return None to force in-memory mode.
-    This bypasses database connection issues.
-    """
+    """Force in‑memory mode – no database."""
     return None
 
-# ---------- User helpers (with fallback) ----------
+# ---------- User helpers ----------
 async def find_user_by_api_key(api_key: str) -> Optional[Dict]:
     for user in _users:
         if user["apiKey"] == api_key:
@@ -58,7 +52,7 @@ async def update_user_balance(user_id: int, amount: float) -> Optional[Dict]:
             }
     return None
 
-# ---------- Record helpers (with fallback) ----------
+# ---------- Record helpers ----------
 async def create_record(
     user_id: int,
     identifier: str,
@@ -131,21 +125,15 @@ async def clear_all_records() -> int:
     _records.clear()
     return count
 
-# ---------- Database initialization (no-op) ----------
+# ---------- Init & seed ----------
 async def init_db():
-    # No-op: we use in-memory store
-    pass
+    pass  # No-op
 
-# ---------- Seed demo data ----------
 async def seed_demo_data():
     if _users:
-        return  # Already seeded
-
-    # Create demo user
+        return
     hashed = bcrypt.hash("password123")
     user = await create_user("demo", hashed, "demo-api-key-123", 100.0)
-
-    # Insert 10 sample records
     for i in range(1, 11):
         await create_record(
             user_id=user["id"],
