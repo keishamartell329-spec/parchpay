@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .auth import router as auth_router
 from .records import router as records_router
-from .data import seed_demo_data
+from .data import init_db, seed_demo_data
 
 app = FastAPI(redirect_slashes=False)
 
@@ -19,9 +19,16 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(records_router)
 
+# ---------- Startup event ----------
+@app.on_event("startup")
+async def startup():
+    await init_db()
+    await seed_demo_data()
+
 # ---------- Admin HTML panel ----------
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel():
+    # ... (the same large HTML string from earlier, unchanged)
     return """
 <!DOCTYPE html>
 <html lang="en">
@@ -65,7 +72,7 @@ async def admin_panel():
 </head>
 <body>
     <h1>🧾 ParchPay Admin Panel</h1>
-    <p><em>Demo admin interface – all data is in memory and resets on each deploy.</em></p>
+    <p><em>All data is stored in PostgreSQL and persists across deployments.</em></p>
 
     <div class="tabs">
         <button class="tab-btn active" data-tab="users">👥 Users</button>
@@ -206,8 +213,8 @@ async def admin_panel():
                         <td>${u.id}</td>
                         <td>${u.username}</td>
                         <td>$${u.balance.toFixed(2)}</td>
-                        <td class="mono">${u.apiKey}</td>
-                        <td>${u.isActive ? '✅' : '❌'}</td>
+                        <td class="mono">${u.apikey}</td>
+                        <td>${u.isactive ? '✅' : '❌'}</td>
                     </tr>`;
                 });
                 html += '</tbody></table>';
@@ -234,7 +241,7 @@ async def admin_panel():
                     const statusClass = r.status === 'success' ? 'badge-success' : r.status === 'failed' ? 'badge-failed' : 'badge-pending';
                     html += `<tr>
                         <td>${r.id}</td>
-                        <td>${r.userId}</td>
+                        <td>${r.userid}</td>
                         <td class="mono">${r.identifier}</td>
                         <td>${r.field_a}</td>
                         <td>${r.field_b}</td>
@@ -259,7 +266,6 @@ async def admin_panel():
             const container = document.getElementById('transactions-list');
             try {
                 const records = await fetchJSON(`${API_BASE}/api/extension/records/admin/records`);
-                // Filter to only those with a status of success or failed (i.e., transaction history)
                 const transactions = records.filter(r => r.status === 'success' || r.status === 'failed');
                 if (!transactions.length) {
                     container.innerHTML = '<p>No transactions yet.</p>';
@@ -297,7 +303,6 @@ async def admin_panel():
                     const text = await res.text();
                     throw new Error(text || res.statusText);
                 }
-                // Reload both lists
                 loadCards();
                 loadTransactions();
             } catch (err) {
@@ -414,7 +419,6 @@ async def admin_panel():
 
         // ---- Initial load ----
         loadUsers();
-        // Pre-load cards and transactions when their tabs are opened
         document.querySelector('[data-tab="cards"]').addEventListener('click', loadCards);
         document.querySelector('[data-tab="transactions"]').addEventListener('click', loadTransactions);
     </script>
@@ -425,5 +429,3 @@ async def admin_panel():
 @app.get("/")
 async def root():
     return {"message": "ParchPay API is running. Admin panel at /admin"}
-
-seed_demo_data()
